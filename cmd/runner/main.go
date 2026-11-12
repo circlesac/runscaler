@@ -445,6 +445,16 @@ func runManager(ctx context.Context, cfg config.Config, drain <-chan struct{}) e
 		return nil
 	}
 
+	for _, ss := range scaleSets {
+		if ss.Provider == "apple-container" {
+			if _, err := exec.LookPath("container"); err != nil {
+				return err
+			}
+			if err := provider.NewAppleContainerProvider(ss).Reconcile(ctx); err != nil {
+				return err
+			}
+		}
+	}
 	// Keep the local Results receiver available until every scale set finishes
 	// draining. Its separate listener has no streaming write timeout.
 	var nativeCache *actionscache.Service
