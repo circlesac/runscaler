@@ -107,6 +107,7 @@ type ScaleSetConfig struct {
 	Docker DockerConfig `mapstructure:"docker"`
 
 	AppleContainer AppleContainerConfig `mapstructure:"apple-container"`
+	Seatbelt       SeatbeltConfig       `mapstructure:"seatbelt"`
 
 	// Tart VM provider settings
 	Tart TartConfig `mapstructure:"tart"`
@@ -116,6 +117,17 @@ type ScaleSetConfig struct {
 type AppleContainerConfig struct {
 	CPU    int `mapstructure:"cpu"`
 	Memory int `mapstructure:"memory"`
+}
+
+// SeatbeltConfig selects an unconfigured runner template and private job roots.
+type SeatbeltConfig struct {
+	Environment   map[string]string `mapstructure:"environment"`
+	SDKRoot       string            `mapstructure:"sdk-root"`
+	DeveloperDir  string            `mapstructure:"developer-dir"`
+	RunnerDir     string            `mapstructure:"runner-dir"`
+	StateDir      string            `mapstructure:"state-dir"`
+	ReadOnlyPaths []string          `mapstructure:"read-only-paths"`
+	Path          string            `mapstructure:"path"`
 }
 
 // DockerConfig holds Docker-specific provider settings.
@@ -644,8 +656,6 @@ func (ss *ScaleSetConfig) ValidationErrors() []error {
 		if root := ss.Docker.WorkspaceRoot; root != "" {
 			if ss.DockerDaemonMode() != "host" {
 				add(fmt.Errorf("docker.workspace-root requires docker.dind=true or daemon-mode=host; it is unavailable with dind/none modes"))
-			if !ss.IsDinD() {
-				add(fmt.Errorf("docker.workspace-root requires docker.dind=true"))
 			}
 			if !filepath.IsAbs(root) || filepath.Clean(root) != root || root == "/" {
 				add(fmt.Errorf("docker.workspace-root must be a clean absolute host path other than /"))
@@ -680,10 +690,16 @@ func (ss *ScaleSetConfig) ValidationErrors() []error {
 				}
 			}
 		}
-	case "tart":
-		if ss.MaxRunners > MaxTartVMsPerHost {
-			add(fmt.Errorf("max-runners must be <= %d for the Tart provider (Apple host limit)", MaxTartVMsPerHost))
+	case "seatbelt":
+		for _, path := range append([]string{ss.Seatbelt.RunnerDir, ss.Seatbelt.StateDir}, ss.Seatbelt.ReadOnlyPaths...) {
+			if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
+				add(fmt.Errorf("seatbelt requires clean absolute paths other than /"))
+			}
 		}
+		if ss.Seatbelt.Path == "" {
+			add(fmt.Errorf("seatbelt.path is required"))
+		}
+	case "tart":
 		if ss.Tart.PoolSize < 0 || ss.Tart.PoolSize > ss.MaxRunners {
 			add(fmt.Errorf("tart pool-size must be between 0 and max-runners"))
 		}
@@ -698,10 +714,6 @@ func (ss *ScaleSetConfig) ValidationErrors() []error {
 		}
 		if b := ss.Tart.NetBridged; b != "" && (strings.HasPrefix(b, "-") || strings.ContainsAny(b, " \t\n=")) {
 			add(fmt.Errorf("tart net-bridged %q is not a host interface name", b))
-		}
-	case "apple-container":
-		if ss.AppleContainer.CPU < 1 || ss.AppleContainer.Memory < 512 {
-			add(fmt.Errorf("apple-container requires positive CPU and at least 512 MB memory"))
 		}
 		if ss.Tart.NetSoftnet && ss.Tart.NetBridged != "" {
 			add(fmt.Errorf("tart net-softnet and net-bridged cannot both be set"))
@@ -723,6 +735,10 @@ func (ss *ScaleSetConfig) ValidationErrors() []error {
 		}
 		if ss.Tart.CloneMinFreeGB < 0 {
 			add(fmt.Errorf("tart clone-min-free-gb must be >= 0"))
+		}
+	case "apple-container":
+		if ss.AppleContainer.CPU < 1 || ss.AppleContainer.Memory < 512 {
+			add(fmt.Errorf("apple-container requires positive CPU and at least 512 MB memory"))
 		}
 	default:
 		add(fmt.Errorf("unsupported provider %q (must be %q, \"apple-container\" or \"tart\")", ss.Provider, DefaultProvider))

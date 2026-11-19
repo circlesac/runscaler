@@ -334,7 +334,7 @@ func runManager(ctx context.Context, cfg config.Config, drain <-chan struct{}) e
 	for _, ss := range scaleSets {
 		if ss.IsTart() {
 			needsTart = true
-		} else if ss.Provider == config.DefaultProvider {
+		} else if ss.Provider == config.DefaultProvider || ss.Provider == "docker" {
 			needsDocker = true
 		}
 	}
@@ -349,7 +349,7 @@ func runManager(ctx context.Context, cfg config.Config, drain <-chan struct{}) e
 	}()
 	if needsDocker {
 		for _, ss := range scaleSets {
-			if ss.Provider != config.DefaultProvider || dockerClients[ss.Docker.Socket] != nil {
+			if (ss.Provider != config.DefaultProvider && ss.Provider != "docker") || dockerClients[ss.Docker.Socket] != nil {
 				continue
 			}
 			client, err := dockerclient.New(
@@ -847,7 +847,7 @@ func watchScaleSetDrain(listenCtx context.Context, drain <-chan struct{}, timeou
 func groupDockerScaleSets(scaleSets []config.ScaleSetConfig) map[string][]config.ScaleSetConfig {
 	grouped := make(map[string][]config.ScaleSetConfig)
 	for _, ss := range scaleSets {
-		if ss.Provider == config.DefaultProvider {
+		if ss.Provider == config.DefaultProvider || ss.Provider == "docker" {
 			grouped[ss.Docker.Socket] = append(grouped[ss.Docker.Socket], ss)
 		}
 	}
