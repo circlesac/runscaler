@@ -27,11 +27,11 @@ type SeatbeltProvider struct {
 	instances map[string]*seatbeltInstance
 }
 type seatbeltInstance struct {
-	cmd         *exec.Cmd
-	done        chan struct{}
-	err         error
-	dir, marker string
-	log         *os.File
+	cmd                  *exec.Cmd
+	done                 chan struct{}
+	err                  error
+	dir, marker, profile string
+	log                  *os.File
 }
 
 func NewSeatbeltProvider(ss config.ScaleSetConfig) *SeatbeltProvider {
@@ -107,20 +107,14 @@ func (p *SeatbeltProvider) Validate() error {
 // children but nothing else.
 func SeatbeltProfile(dir string, tools []string, userDirs ...string) string {
 	q := strconv.Quote
-	s := "(version 1)\n(allow default)\n(allow process*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow network*)\n(allow system-info)\n(allow user-preference-read (preference-domain \"com.apple.dt.Xcode\") (preference-domain \"com.apple.dt.xcode\") (preference-domain \"com.apple.dt.xcodebuild\"))\n(allow ipc-posix-shm-read*)\n"
+	s := "(version 1)\n(deny default)\n(allow process*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow network*)\n(allow system-info)\n(allow user-preference-read (preference-domain \"com.apple.dt.Xcode\") (preference-domain \"com.apple.dt.xcode\") (preference-domain \"com.apple.dt.xcodebuild\"))\n(allow ipc-posix-shm-read*)\n"
 	for _, path := range append([]string{"/System", "/System/Volumes/Preboot", "/private/preboot", "/usr", "/bin", "/sbin", "/Library/Developer", "/Library/Apple", "/Library/Preferences/com.apple.dt.Xcode.plist", "/private/var/db", "/private/etc", "/dev"}, tools...) {
 		s += "(allow file-read* (subpath " + q(path) + "))\n"
 	}
 	for parent := filepath.Dir(dir); parent != "/"; parent = filepath.Dir(parent) {
 		s += "(allow file-read* (literal " + q(parent) + "))\n"
 	}
-	s += "(allow file* (subpath " + q(dir) + "))\n"
 	s += "(allow file-read* file-write* (subpath " + q(dir) + "))\n(allow file-write-create file-write-data file-write-unlink (subpath " + q(dir) + "))\n(allow file-map-executable (subpath " + q(dir) + "))\n(allow file-ioctl (subpath " + q(dir) + "))\n(allow file-read-metadata)\n(allow file-read-data (literal \"/\"))\n(allow file-write* (literal \"/dev/null\"))\n"
-	// SwiftPM, clang and the linker may use the host temp roots even when
-	// TMPDIR and Darwin user dirs are redirected into the job tree.
-	for _, tempDir := range []string{"/private/tmp", "/private/var/tmp"} {
-		s += "(allow file-read* file-write* (subpath " + q(tempDir) + "))\n"
-	}
 	for _, userDir := range userDirs {
 		s += "(allow file-read* file-write* (subpath " + q(userDir) + "))\n"
 		s += "(allow file-read* (subpath " + q(filepath.Dir(userDir)) + "))\n"
@@ -178,6 +172,10 @@ func (p *SeatbeltProvider) StartInstance(ctx context.Context, name, jit string) 
 	if root != p.cfg.StateDir {
 		return "", fmt.Errorf("seatbelt state-dir must not contain symlinks")
 	}
+	profiles := filepath.Join(root, ".profiles")
+	if err := os.MkdirAll(profiles, 0700); err != nil {
+		return "", err
+	}
 	// Random, controller-owned paths never incorporate GitHub input.
 	dir, err := os.MkdirTemp(root, "job-")
 	if err != nil {
@@ -224,7 +222,8 @@ func (p *SeatbeltProvider) StartInstance(ctx context.Context, name, jit string) 
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "profile.sb"), []byte(SeatbeltProfile(dir, p.cfg.ReadOnlyPaths, userDirs...)), 0600); err != nil {
+	profile := filepath.Join(profiles, filepath.Base(dir)+".sb")
+	if err := os.WriteFile(profile, []byte(SeatbeltProfile(dir, p.cfg.ReadOnlyPaths, userDirs...)), 0600); err != nil {
 		return "", err
 	}
 	token := make([]byte, 16)
@@ -236,7 +235,7 @@ func (p *SeatbeltProvider) StartInstance(ctx context.Context, name, jit string) 
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.Command("/usr/bin/sandbox-exec", "-f", filepath.Join(dir, "profile.sb"), filepath.Join(dir, "run.sh"))
+	cmd := exec.Command("/usr/bin/sandbox-exec", "-f", profile, filepath.Join(dir, "run.sh"))
 	cmd.Dir = dir
 	cmd.Env = []string{"PATH=" + cargoBin + ":" + p.cfg.Path, "HOME=" + filepath.Join(dir, "home"), "CFFIXED_USER_HOME=" + filepath.Join(dir, "home"), "TMPDIR=" + filepath.Join(dir, "tmp"), "DIRHELPER_USER_DIR_SUFFIX=" + seatbeltUserDirSuffix(dir), "LANG=en_US.UTF-8", "xcrun_nocache=1", "RUNSCALER_PROVIDER=seatbelt", "ACTIONS_RUNNER_INPUT_JITCONFIG=" + jit, marker}
 	if p.cfg.SDKRoot != "" {
@@ -281,11 +280,12 @@ func (p *SeatbeltProvider) StartInstance(ctx context.Context, name, jit string) 
 		log.Close()
 		return "", err
 	}
-	inst := &seatbeltInstance{cmd: cmd, done: make(chan struct{}), dir: dir, marker: marker, log: log}
+	inst := &seatbeltInstance{cmd: cmd, done: make(chan struct{}), dir: dir, marker: marker, profile: profile, log: log}
 	record, _ := json.Marshal(struct {
-		PID    int
-		Marker string
-	}{cmd.Process.Pid, marker})
+		PID     int
+		Marker  string
+		Profile string
+	}{cmd.Process.Pid, marker, profile})
 	if err := os.WriteFile(dir+".json", record, 0600); err != nil {
 		_ = seatbeltKill(context.WithoutCancel(ctx), inst)
 		_ = cmd.Wait()
@@ -398,6 +398,11 @@ func (p *SeatbeltProvider) RemoveInstance(ctx context.Context, id string) error 
 	if err := os.Remove(i.dir + ".json"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	if i.profile != "" {
+		if err := os.Remove(i.profile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
 	p.mu.Lock()
 	delete(p.instances, id)
 	p.mu.Unlock()
@@ -438,8 +443,9 @@ func (p *SeatbeltProvider) Reconcile(ctx context.Context) error {
 			return err
 		}
 		var record struct {
-			PID    int
-			Marker string
+			PID     int
+			Marker  string
+			Profile string
 		}
 		if err = json.Unmarshal(data, &record); err != nil {
 			return err
@@ -449,7 +455,7 @@ func (p *SeatbeltProvider) Reconcile(ctx context.Context) error {
 		}
 		dir := strings.TrimSuffix(path, ".json")
 		// Recovery validates the live command before using a saved group ID.
-		inst := &seatbeltInstance{dir: dir, marker: record.Marker, cmd: &exec.Cmd{Process: &os.Process{Pid: record.PID}}, done: make(chan struct{})}
+		inst := &seatbeltInstance{dir: dir, marker: record.Marker, profile: record.Profile, cmd: &exec.Cmd{Process: &os.Process{Pid: record.PID}}, done: make(chan struct{})}
 		close(inst.done)
 		p.mu.Lock()
 		p.instances[dir] = inst

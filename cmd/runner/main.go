@@ -453,6 +453,10 @@ func runManager(ctx context.Context, cfg config.Config, drain <-chan struct{}) e
 			if err := provider.NewAppleContainerProvider(ss).Reconcile(ctx); err != nil {
 				return err
 			}
+		} else if ss.Provider == "seatbelt" {
+			if err := provider.NewSeatbeltProvider(ss).Reconcile(ctx); err != nil {
+				return err
+			}
 		}
 	}
 	// Keep the local Results receiver available until every scale set finishes

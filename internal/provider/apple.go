@@ -104,38 +104,9 @@ func (p *AppleContainerProvider) RemoveInstance(ctx context.Context, id string) 
 		if item.Configuration.Labels["io.github.runscaler.apple-owner"] != p.owner {
 			return fmt.Errorf("refusing to delete a foreign apple container")
 		}
-		// JobCompleted can arrive before the image finishes shutting down
-		// containerd. Let its normal exit settle before signalling the VM.
-		deadline := time.NewTimer(30 * time.Second)
-		defer deadline.Stop()
-		waiting := item.Status.State != "stopped"
-		for waiting {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-deadline.C:
-				if _, err = p.command.Run(ctx, "container", "stop", "--time", "30", id); err != nil {
-					return err
-				}
-				waiting = false
-			case <-time.After(p.poll):
-				current, listErr := p.list(ctx)
-				if listErr != nil {
-					return listErr
-				}
-				found := false
-				for _, candidate := range current {
-					if candidate.Configuration.ID == id {
-						found = true
-						if candidate.Configuration.Labels["io.github.runscaler.apple-owner"] != p.owner {
-							return fmt.Errorf("apple container ownership changed during cleanup")
-						}
-						waiting = candidate.Status.State != "stopped"
-					}
-				}
-				if !found {
-					return nil
-				}
+		if item.Status.State != "stopped" {
+			if _, err = p.command.Run(ctx, "container", "stop", "--time", "30", id); err != nil {
+				return err
 			}
 		}
 		_, err = p.command.Run(ctx, "container", "delete", id)
