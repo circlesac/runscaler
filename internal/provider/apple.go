@@ -105,7 +105,14 @@ func (p *AppleContainerProvider) RemoveInstance(ctx context.Context, id string) 
 			return fmt.Errorf("refusing to delete a foreign apple container")
 		}
 		if item.Status.State != "stopped" {
-			if _, err = p.command.Run(ctx, "container", "stop", "--time", "30", id); err != nil {
+			grace := 5
+			if deadline, ok := ctx.Deadline(); ok {
+				remaining := int(time.Until(deadline).Seconds())
+				if remaining < grace {
+					grace = max(1, remaining-1)
+				}
+			}
+			if _, err = p.command.Run(ctx, "container", "stop", "--time", strconv.Itoa(grace), id); err != nil {
 				return err
 			}
 		}

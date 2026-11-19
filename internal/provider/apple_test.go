@@ -111,6 +111,7 @@ func TestAppleLifecycleAndForeignPreservation(t *testing.T) {
 	if err = p.WaitReady(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
+	f.items[1].Status.State = "running"
 	if err = p.RemoveInstance(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}

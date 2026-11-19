@@ -368,13 +368,16 @@ func (p *SeatbeltProvider) RemoveInstance(ctx context.Context, id string) error 
 	if err != nil {
 		return err
 	}
-	profile := filepath.Join(i.dir, "profile.sb")
 	for _, userDir := range userDirs {
 		// Darwin owns the per-user root and marks it sunlnk. Clean only the
 		// job's children from inside the same sandbox; removing the root itself
 		// is rejected by macOS and would strand the runner allocation.
-		cmd := exec.CommandContext(ctx, "/usr/bin/sandbox-exec", "-f", profile, "/bin/sh", "-c", "find \"$1\" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +", "sh", userDir)
-		_ = cmd.Run()
+		if i.profile != "" {
+			cmd := exec.CommandContext(ctx, "/usr/bin/sandbox-exec", "-f", i.profile, "/bin/sh", "-c", "find \"$1\" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +", "sh", userDir)
+			if err := cmd.Run(); err != nil && ctx.Err() != nil {
+				return ctx.Err()
+			}
+		}
 		if err := os.RemoveAll(userDir); err != nil && !errors.Is(err, os.ErrNotExist) && !os.IsPermission(err) {
 			return err
 		}
