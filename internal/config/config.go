@@ -106,8 +106,28 @@ type ScaleSetConfig struct {
 	// Docker provider settings
 	Docker DockerConfig `mapstructure:"docker"`
 
+	AppleContainer AppleContainerConfig `mapstructure:"apple-container"`
+	Seatbelt       SeatbeltConfig       `mapstructure:"seatbelt"`
+
 	// Tart VM provider settings
 	Tart TartConfig `mapstructure:"tart"`
+}
+
+// AppleContainerConfig bounds each independently booted Linux job VM.
+type AppleContainerConfig struct {
+	CPU    int `mapstructure:"cpu"`
+	Memory int `mapstructure:"memory"`
+}
+
+// SeatbeltConfig selects an unconfigured runner template and private job roots.
+type SeatbeltConfig struct {
+	Environment   map[string]string `mapstructure:"environment"`
+	SDKRoot       string            `mapstructure:"sdk-root"`
+	DeveloperDir  string            `mapstructure:"developer-dir"`
+	RunnerDir     string            `mapstructure:"runner-dir"`
+	StateDir      string            `mapstructure:"state-dir"`
+	ReadOnlyPaths []string          `mapstructure:"read-only-paths"`
+	Path          string            `mapstructure:"path"`
 }
 
 // DockerConfig holds Docker-specific provider settings.
@@ -670,6 +690,15 @@ func (ss *ScaleSetConfig) ValidationErrors() []error {
 				}
 			}
 		}
+	case "seatbelt":
+		for _, path := range append([]string{ss.Seatbelt.RunnerDir, ss.Seatbelt.StateDir}, ss.Seatbelt.ReadOnlyPaths...) {
+			if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
+				add(fmt.Errorf("seatbelt requires clean absolute paths other than /"))
+			}
+		}
+		if ss.Seatbelt.Path == "" {
+			add(fmt.Errorf("seatbelt.path is required"))
+		}
 	case "tart":
 		if ss.Tart.PoolSize < 0 || ss.Tart.PoolSize > ss.MaxRunners {
 			add(fmt.Errorf("tart pool-size must be between 0 and max-runners"))
@@ -707,8 +736,12 @@ func (ss *ScaleSetConfig) ValidationErrors() []error {
 		if ss.Tart.CloneMinFreeGB < 0 {
 			add(fmt.Errorf("tart clone-min-free-gb must be >= 0"))
 		}
+	case "apple-container":
+		if ss.AppleContainer.CPU < 1 || ss.AppleContainer.Memory < 512 {
+			add(fmt.Errorf("apple-container requires positive CPU and at least 512 MB memory"))
+		}
 	default:
-		add(fmt.Errorf("unsupported provider %q (must be %q or \"tart\")", ss.Provider, DefaultProvider))
+		add(fmt.Errorf("unsupported provider %q (must be %q, \"apple-container\" or \"tart\")", ss.Provider, DefaultProvider))
 	}
 
 	return problems

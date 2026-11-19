@@ -334,7 +334,7 @@ func runManager(ctx context.Context, cfg config.Config, drain <-chan struct{}) e
 	for _, ss := range scaleSets {
 		if ss.IsTart() {
 			needsTart = true
-		} else {
+		} else if ss.Provider == config.DefaultProvider || ss.Provider == "docker" {
 			needsDocker = true
 		}
 	}
@@ -349,7 +349,7 @@ func runManager(ctx context.Context, cfg config.Config, drain <-chan struct{}) e
 	}()
 	if needsDocker {
 		for _, ss := range scaleSets {
-			if ss.IsTart() || dockerClients[ss.Docker.Socket] != nil {
+			if (ss.Provider != config.DefaultProvider && ss.Provider != "docker") || dockerClients[ss.Docker.Socket] != nil {
 				continue
 			}
 			client, err := dockerclient.New(
@@ -445,6 +445,20 @@ func runManager(ctx context.Context, cfg config.Config, drain <-chan struct{}) e
 		return nil
 	}
 
+	for _, ss := range scaleSets {
+		if ss.Provider == "apple-container" {
+			if _, err := exec.LookPath("container"); err != nil {
+				return err
+			}
+			if err := provider.NewAppleContainerProvider(ss).Reconcile(ctx); err != nil {
+				return err
+			}
+		} else if ss.Provider == "seatbelt" {
+			if err := provider.NewSeatbeltProvider(ss).Reconcile(ctx); err != nil {
+				return err
+			}
+		}
+	}
 	// Keep the local Results receiver available until every scale set finishes
 	// draining. Its separate listener has no streaming write timeout.
 	var nativeCache *actionscache.Service
@@ -837,7 +851,7 @@ func watchScaleSetDrain(listenCtx context.Context, drain <-chan struct{}, timeou
 func groupDockerScaleSets(scaleSets []config.ScaleSetConfig) map[string][]config.ScaleSetConfig {
 	grouped := make(map[string][]config.ScaleSetConfig)
 	for _, ss := range scaleSets {
-		if !ss.IsTart() {
+		if ss.Provider == config.DefaultProvider || ss.Provider == "docker" {
 			grouped[ss.Docker.Socket] = append(grouped[ss.Docker.Socket], ss)
 		}
 	}
