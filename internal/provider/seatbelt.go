@@ -122,11 +122,12 @@ func SeatbeltProfile(dir string, tools []string, userDirs ...string) string {
 		tempItems := filepath.Join(filepath.Dir(userDir), "TemporaryItems")
 		s += "(allow file-write* (subpath " + q(tempItems) + "))\n(allow file-write-create file-write-data file-write-unlink (subpath " + q(tempItems) + "))\n"
 		if filepath.Base(filepath.Dir(userDir)) == "T" {
-			// Swift Build runs the link step with an environment that has
-			// neither TMPDIR nor the suffix, so the Swift driver creates its
-			// TemporaryDirectory.* in the shared parent. Allow only that name;
-			// xcrun_db stays denied because it is the host's tool lookup cache.
-			s += "(allow file-read* file-write* (regex #\"^" + regexp.QuoteMeta(filepath.Dir(userDir)) + "/TemporaryDirectory\\.[^/]+(/|$)\"))\n"
+			// Swift Build runs the link and dSYM steps with an environment that
+			// has neither TMPDIR nor the suffix, so the Swift driver creates its
+			// TemporaryDirectory.* and dsymutil its dsymutil-* in the shared
+			// parent. Allow only those names; xcrun_db stays denied because it
+			// is the host's tool lookup cache.
+			s += "(allow file-read* file-write* (regex #\"^" + regexp.QuoteMeta(filepath.Dir(userDir)) + "/(TemporaryDirectory\\.|dsymutil-)[^/]+(/|$)\"))\n"
 		}
 	}
 	// Developer ID releases build a disk image: hdiutil attaches a job-owned
