@@ -446,14 +446,15 @@ func runManager(ctx context.Context, cfg config.Config, drain <-chan struct{}) e
 	}
 
 	for _, ss := range scaleSets {
-		if ss.Provider == "apple-container" {
+		switch ss.Provider {
+		case "apple-container":
 			if _, err := exec.LookPath("container"); err != nil {
 				return err
 			}
 			if err := provider.NewAppleContainerProvider(ss).Reconcile(ctx); err != nil {
 				return err
 			}
-		} else if ss.Provider == "seatbelt" {
+		case "seatbelt":
 			if err := provider.NewSeatbeltProvider(ss).Reconcile(ctx); err != nil {
 				return err
 			}

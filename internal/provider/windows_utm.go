@@ -155,7 +155,7 @@ func (p *WindowsUTMProvider) WaitReady(ctx context.Context, id string) error {
 	dir, port := p.jitISOs[id], p.ports[id]
 	p.mu.Unlock()
 	if dir == "" || port == 0 {
-		return fmt.Errorf("Windows UTM instance %q is not tracked", id)
+		return fmt.Errorf("windows-utm instance %q is not tracked", id)
 	}
 	const probe = `$log = Join-Path $env:ProgramData 'Runscaler/runner.log'; if (Test-Path $log) { if (Select-String -LiteralPath $log -SimpleMatch 'Listening for Jobs' -Quiet) { exit 0 } }; exit 1`
 	encoded := base64.StdEncoding.EncodeToString(encodePowerShell(probe))
