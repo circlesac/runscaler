@@ -146,3 +146,68 @@ func TestSeatbeltDarwinTempTools(t *testing.T) {
 		t.Fatalf("job temp directory remains: %v", err)
 	}
 }
+
+// A Developer ID release signs from a job keychain and builds its disk image
+// by attaching it inside the job. Removal detaches what a killed job left mounted.
+func TestSeatbeltReleaseSigningAndDiskImage(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := filepath.Join(root, "template")
+	os.MkdirAll(filepath.Join(template, "bin"), 0700)
+	os.WriteFile(filepath.Join(template, "bin/Runner.Listener"), []byte("fixture"), 0600)
+	os.WriteFile(filepath.Join(template, "run.sh"), []byte(`#!/bin/sh
+cd "$TMPDIR"
+printf '[req]\ndistinguished_name=dn\nx509_extensions=v3\nprompt=no\n[dn]\nCN=Runscaler Seatbelt Test\n[v3]\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=critical,codeSigning\nbasicConstraints=CA:false\n' > ext.cnf
+/usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -keyout k.pem -out c.pem -days 1 -config ext.cnf >/dev/null 2>&1
+/usr/bin/openssl pkcs12 -export -inkey k.pem -in c.pem -out id.p12 -passout pass:pw -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
+kc="$TMPDIR/test.keychain-db"
+security create-keychain -p "" "$kc" && security unlock-keychain -p "" "$kc"
+security import id.p12 -k "$kc" -P pw -T /usr/bin/codesign >/dev/null
+security set-key-partition-list -S apple-tool:,apple: -s -k "" "$kc" >/dev/null
+cp /usr/bin/true target
+codesign --force --keychain "$kc" --sign "Runscaler Seatbelt Test" target > sign.out 2>&1 && echo ok > sign.out
+mkdir src mnt left && echo hi > src/a
+{ hdiutil create -size 8m -fs HFS+ -volname T -layout NONE -ov rw.dmg &&
+  hdiutil attach rw.dmg -nobrowse -noautoopen -mountpoint "$TMPDIR/mnt" &&
+  ditto src mnt && hdiutil detach mnt &&
+  hdiutil convert rw.dmg -format UDZO -ov -o out.dmg && echo ok; } > dmg.log 2>&1
+tail -1 dmg.log > dmg.out
+hdiutil create -size 8m -fs HFS+ -volname L -layout NONE -ov left.dmg >/dev/null 2>&1
+hdiutil attach left.dmg -nobrowse -noautoopen -mountpoint "$TMPDIR/left" > left.out 2>&1 && echo ok > left.out
+echo 'Listening for Jobs'
+sleep 120
+`), 0700)
+	p := NewSeatbeltProvider(config.ScaleSetConfig{Seatbelt: config.SeatbeltConfig{RunnerDir: template, StateDir: filepath.Join(root, "jobs"), Path: "/usr/bin:/bin:/usr/sbin:/sbin"}})
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	id, err := p.StartInstance(ctx, "ignored", "synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(ctx)
+	if err = p.WaitReady(ctx, id); err != nil {
+		data, _ := os.ReadFile(filepath.Join(id, "runner.log"))
+		t.Fatalf("%v: %s", err, data)
+	}
+	read := func(name string) string {
+		data, _ := os.ReadFile(filepath.Join(id, "tmp", name))
+		return strings.TrimSpace(string(data))
+	}
+	if got := read("sign.out"); got != "ok" {
+		t.Fatalf("codesign from a job keychain: %q", got)
+	}
+	if got := read("dmg.out"); got != "ok" {
+		t.Fatalf("disk image attached inside the job: %q (%s)", got, read("dmg.log"))
+	}
+	if got := read("left.out"); got != "ok" {
+		t.Fatalf("leftover attach: %q", got)
+	}
+	if err = p.RemoveInstance(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(id); !os.IsNotExist(err) {
+		t.Fatalf("job directory remains: %v", err)
+	}
+}

@@ -109,7 +109,7 @@ func (p *SeatbeltProvider) Validate() error {
 func SeatbeltProfile(dir string, tools []string, userDirs ...string) string {
 	q := strconv.Quote
 	s := "(version 1)\n(deny default)\n(allow process*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow network*)\n(allow system-info)\n(allow user-preference-read (preference-domain \"com.apple.dt.Xcode\") (preference-domain \"com.apple.dt.xcode\") (preference-domain \"com.apple.dt.xcodebuild\"))\n(allow ipc-posix-shm-read*)\n"
-	for _, path := range append([]string{"/System", "/System/Volumes/Preboot", "/private/preboot", "/usr", "/bin", "/sbin", "/Library/Developer", "/Library/Apple", "/Library/Preferences/com.apple.dt.Xcode.plist", "/private/var/db", "/private/etc", "/dev"}, tools...) {
+	for _, path := range append([]string{"/System", "/System/Volumes/Preboot", "/private/preboot", "/usr", "/bin", "/sbin", "/Library/Developer", "/Library/Apple", "/Library/Preferences/com.apple.dt.Xcode.plist", "/Library/Preferences/com.apple.security.systemidentities.plist", "/private/var/db", "/private/etc", "/dev"}, tools...) {
 		s += "(allow file-read* (subpath " + q(path) + "))\n"
 	}
 	for parent := filepath.Dir(dir); parent != "/"; parent = filepath.Dir(parent) {
@@ -129,8 +129,40 @@ func SeatbeltProfile(dir string, tools []string, userDirs ...string) string {
 			s += "(allow file-read* file-write* (regex #\"^" + regexp.QuoteMeta(filepath.Dir(userDir)) + "/TemporaryDirectory\\.[^/]+(/|$)\"))\n"
 		}
 	}
+	// Developer ID releases build a disk image: hdiutil attaches a job-owned
+	// image at a mount point inside the job, through the disk image helper
+	// (a sandbox extension and IOKit) and the image's /dev/disk nodes, which
+	// Unix ownership limits to devices this user attached. Mounts stay in the job.
+	s += "(allow iokit-open)\n(allow file-issue-extension (subpath " + q(dir) + "))\n(allow file-mount file-unmount (subpath " + q(dir) + "))\n(allow file-read* file-write* file-ioctl (regex #\"^/dev/r?disk[0-9]+(s[0-9]+)*$\"))\n"
 	s += "(allow signal (target same-sandbox))\n"
 	return s
+}
+
+// seatbeltDetachMounts force-detaches volumes a job left mounted inside its
+// tree, so the tree can be removed after the job is killed mid-build.
+func seatbeltDetachMounts(ctx context.Context, dir string) error {
+	out, err := exec.CommandContext(ctx, "/sbin/mount").Output()
+	if err != nil {
+		return err
+	}
+	var mounts []string
+	for _, line := range strings.Split(string(out), "\n") {
+		_, rest, ok := strings.Cut(line, " on ")
+		if !ok {
+			continue
+		}
+		point, _, ok := strings.Cut(rest, " (")
+		if ok && strings.HasPrefix(point, dir+"/") {
+			mounts = append(mounts, point)
+		}
+	}
+	// Innermost first.
+	for i := len(mounts) - 1; i >= 0; i-- {
+		if out, err := exec.CommandContext(ctx, "/usr/bin/hdiutil", "detach", "-force", mounts[i]).CombinedOutput(); err != nil {
+			return fmt.Errorf("detach %s: %w: %s", mounts[i], err, out)
+		}
+	}
+	return nil
 }
 
 // seatbeltUserDirSuffix names the job's private subdirectory of the per-user
@@ -415,6 +447,9 @@ func (p *SeatbeltProvider) RemoveInstance(ctx context.Context, id string) error 
 		if err := os.RemoveAll(userDir); err != nil && !errors.Is(err, os.ErrNotExist) && !os.IsPermission(err) {
 			return err
 		}
+	}
+	if err := seatbeltDetachMounts(ctx, i.dir); err != nil {
+		return err
 	}
 	// Go module caches contain read-only directories; restore owner write bits
 	// only beneath our randomly allocated job root before removing it.
