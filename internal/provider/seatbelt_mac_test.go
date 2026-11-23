@@ -93,7 +93,8 @@ func TestSeatbeltDarwinTempTools(t *testing.T) {
 		"/usr/bin/mktemp -d > system.out 2>&1 || echo FAIL >> system.out\n"+
 		"getconf DARWIN_USER_TEMP_DIR > getconf.out\n"+
 		"shared=$(/usr/bin/getconf DARWIN_USER_TEMP_DIR)\n"+
-		"mkdir \"$shared/TemporaryDirectory.rs$$\" && rmdir \"$shared/TemporaryDirectory.rs$$\" && echo ok > swift.out || echo FAIL > swift.out\n"+
+		"mkdir \"$shared/TemporaryDirectory.rs$$\" && rmdir \"$shared/TemporaryDirectory.rs$$\" && "+
+		"mkdir \"$shared/dsymutil-rs$$\" && rmdir \"$shared/dsymutil-rs$$\" && echo ok > swift.out || echo FAIL > swift.out\n"+
 		"mkdir \"$shared/other.rs$$\" 2>/dev/null && rmdir \"$shared/other.rs$$\" && echo WRITABLE > other.out || echo denied > other.out\n"+
 		"echo 'Listening for Jobs'\nsleep 120\n"), 0700)
 	p := NewSeatbeltProvider(config.ScaleSetConfig{Seatbelt: config.SeatbeltConfig{RunnerDir: template, StateDir: filepath.Join(root, "jobs"), Path: "/usr/bin:/bin"}})
@@ -129,7 +130,7 @@ func TestSeatbeltDarwinTempTools(t *testing.T) {
 		t.Fatalf("getconf DARWIN_USER_TEMP_DIR = %q, want %s", got, private)
 	}
 	if got := read("swift.out"); got != "ok" {
-		t.Fatalf("Swift driver TemporaryDirectory in the shared temp parent: %q", got)
+		t.Fatalf("Swift driver and dsymutil temporaries in the shared temp parent: %q", got)
 	}
 	if got := read("other.out"); got != "denied" {
 		t.Fatalf("other names in the shared temp parent must stay denied: %q", got)
