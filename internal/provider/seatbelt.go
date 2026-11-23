@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -120,6 +121,13 @@ func SeatbeltProfile(dir string, tools []string, userDirs ...string) string {
 		s += "(allow file-read* (subpath " + q(filepath.Dir(userDir)) + "))\n"
 		tempItems := filepath.Join(filepath.Dir(userDir), "TemporaryItems")
 		s += "(allow file-write* (subpath " + q(tempItems) + "))\n(allow file-write-create file-write-data file-write-unlink (subpath " + q(tempItems) + "))\n"
+		if filepath.Base(filepath.Dir(userDir)) == "T" {
+			// Swift Build runs the link step with an environment that has
+			// neither TMPDIR nor the suffix, so the Swift driver creates its
+			// TemporaryDirectory.* in the shared parent. Allow only that name;
+			// xcrun_db stays denied because it is the host's tool lookup cache.
+			s += "(allow file-read* file-write* (regex #\"^" + regexp.QuoteMeta(filepath.Dir(userDir)) + "/TemporaryDirectory\\.[^/]+(/|$)\"))\n"
+		}
 	}
 	s += "(allow signal (target same-sandbox))\n"
 	return s
@@ -153,6 +161,28 @@ func seatbeltUserDirs(dir string) ([]string, error) {
 		dirs = append(dirs, filepath.Join(base, seatbeltUserDirSuffix(dir)))
 	}
 	return dirs, nil
+}
+
+// seatbeltDarwinTools puts ad-hoc signed copies of the system tools that resolve
+// _CS_DARWIN_USER_TEMP_DIR into the job's PATH. macOS ignores
+// DIRHELPER_USER_DIR_SUFFIX in platform binaries, so /usr/bin/mktemp (which
+// prefers that directory over TMPDIR) and getconf resolve the shared per-user
+// temp directory, which the job may not write. A re-signed copy is an ordinary
+// binary: it honors the suffix and resolves the job's own directory.
+func seatbeltDarwinTools(ctx context.Context, dst string) error {
+	if err := os.MkdirAll(dst, 0700); err != nil {
+		return err
+	}
+	for _, tool := range []string{"mktemp", "getconf"} {
+		target := filepath.Join(dst, tool)
+		if out, err := exec.CommandContext(ctx, "/bin/cp", "/usr/bin/"+tool, target).CombinedOutput(); err != nil {
+			return fmt.Errorf("copy %s: %w: %s", tool, err, out)
+		}
+		if out, err := exec.CommandContext(ctx, "/usr/bin/codesign", "--force", "--sign", "-", target).CombinedOutput(); err != nil {
+			return fmt.Errorf("sign %s: %w: %s", tool, err, out)
+		}
+	}
+	return nil
 }
 
 func (p *SeatbeltProvider) StartInstance(ctx context.Context, name, jit string) (string, error) {
@@ -218,6 +248,10 @@ func (p *SeatbeltProvider) StartInstance(ctx context.Context, name, jit string) 
 			}
 		}
 	}
+	darwinTools := filepath.Join(dir, "darwin-tools")
+	if err := seatbeltDarwinTools(ctx, darwinTools); err != nil {
+		return "", err
+	}
 	userDirs, err := seatbeltUserDirs(dir)
 	if err != nil {
 		return "", err
@@ -237,7 +271,7 @@ func (p *SeatbeltProvider) StartInstance(ctx context.Context, name, jit string) 
 	}
 	cmd := exec.Command("/usr/bin/sandbox-exec", "-f", profile, filepath.Join(dir, "run.sh"))
 	cmd.Dir = dir
-	cmd.Env = []string{"PATH=" + cargoBin + ":" + p.cfg.Path, "HOME=" + filepath.Join(dir, "home"), "CFFIXED_USER_HOME=" + filepath.Join(dir, "home"), "TMPDIR=" + filepath.Join(dir, "tmp"), "DIRHELPER_USER_DIR_SUFFIX=" + seatbeltUserDirSuffix(dir), "LANG=en_US.UTF-8", "xcrun_nocache=1", "RUNSCALER_PROVIDER=seatbelt", "ACTIONS_RUNNER_INPUT_JITCONFIG=" + jit, marker}
+	cmd.Env = []string{"PATH=" + darwinTools + ":" + cargoBin + ":" + p.cfg.Path, "HOME=" + filepath.Join(dir, "home"), "CFFIXED_USER_HOME=" + filepath.Join(dir, "home"), "TMPDIR=" + filepath.Join(dir, "tmp"), "DIRHELPER_USER_DIR_SUFFIX=" + seatbeltUserDirSuffix(dir), "LANG=en_US.UTF-8", "xcrun_nocache=1", "RUNSCALER_PROVIDER=seatbelt", "ACTIONS_RUNNER_INPUT_JITCONFIG=" + jit, marker}
 	if p.cfg.SDKRoot != "" {
 		cmd.Env = append(cmd.Env, "SDKROOT="+p.cfg.SDKRoot)
 	}
