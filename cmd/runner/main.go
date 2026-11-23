@@ -168,7 +168,7 @@ var startManager = func(cmd *cobra.Command) error {
 		return err
 	}
 
-	releaseLock, err := runnerlock.Acquire(runnerlock.DefaultPath, runnerlock.Info{
+	releaseLock, err := runnerlock.Acquire(listenerLockPath(cfg.LockFile), runnerlock.Info{
 		PID:        os.Getpid(),
 		StartedAt:  time.Now(),
 		ConfigPath: viper.ConfigFileUsed(),

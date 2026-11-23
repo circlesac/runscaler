@@ -36,6 +36,7 @@ type scaleSetRuntime struct {
 	tart           *tartRuntime
 	appleContainer bool
 	seatbelt       bool
+	windowsUTM     bool
 }
 
 type dockerRuntime struct {
@@ -65,6 +66,8 @@ func newScaleSetRuntimes(scaleSets []config.ScaleSetConfig, b runtimeBackends) [
 			rt.appleContainer = true
 		} else if ss.Provider == "seatbelt" {
 			rt.seatbelt = true
+		} else if ss.Provider == "windows-utm" {
+			rt.windowsUTM = true
 		} else {
 			rt.docker = &dockerRuntime{client: b.dockerClients[ss.Docker.Socket], pulls: b.dockerPulls}
 		}
@@ -98,6 +101,9 @@ func (rt *scaleSetRuntime) newProvider(ctx context.Context, deps managerDeps) pr
 	}
 	if rt.seatbelt {
 		return provider.NewSeatbeltProvider(rt.config)
+	}
+	if rt.windowsUTM {
+		return provider.NewWindowsUTMProvider(rt.config, rt.logger)
 	}
 	dp := provider.NewDockerProviderWithCoordinator(rt.config, rt.docker.client, rt.logger, rt.docker.pulls)
 	dp.EnableDiagnosticLogs(deps.captureLogs && deps.diagnostics != nil)

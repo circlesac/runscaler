@@ -27,3 +27,11 @@ func probeRunningRunner() (*runnerlock.AlreadyRunningError, error) {
 	}
 	return nil, err
 }
+
+// listenerLockPath lets validation services keep a separate lock from production.
+func listenerLockPath(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	return runnerlock.DefaultPath
+}

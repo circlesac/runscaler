@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/actions/scaleset"
 
 	"github.com/ysya/runscaler/internal/config"
+	runnerlock "github.com/ysya/runscaler/internal/lock"
 )
 
 // fakeScaleSetAPI holds at most one scale set per runner group and records
@@ -160,5 +164,36 @@ token = "ghp_test"
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "NoSuchScaleSet") {
 		t.Fatalf("Execute() error = %v, want one naming the unknown scale set", err)
+	}
+}
+
+func TestScalesetDeleteCommand_UsesConfiguredListenerLock(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "listener.lock")
+	configPath := filepath.Join(dir, "config.toml")
+	src := "lock-file = " + strconv.Quote(lockPath) + `
+[[scaleset]]
+url = "https://github.com/example"
+name = "test-runner"
+token = "ghp_test"
+`
+	if err := os.WriteFile(configPath, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release, err := runnerlock.Acquire(lockPath, runnerlock.Info{
+		PID:       os.Getpid(),
+		StartedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	cmd.SetArgs([]string{"scaleset", "delete", "test-runner", "--config", configPath})
+	defer cmd.SetArgs(nil)
+	err = cmd.Execute()
+	var locked *runnerlock.AlreadyRunningError
+	if !errors.As(err, &locked) || locked.Path != lockPath {
+		t.Fatalf("Execute() error = %v, want refusal for configured lock %s", err, lockPath)
 	}
 }

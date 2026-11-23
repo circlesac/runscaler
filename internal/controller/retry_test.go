@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/actions/scaleset"
@@ -13,21 +14,32 @@ import (
 )
 
 func TestRetryDemandCannotBypassDeadline(t *testing.T) {
-	s := NewScaleSetController(1, 1, 2, &mockProvider{}, &errorScaleset{err: errors.New("failure")}, slog.Default(), WithRetry(config.RetryConfig{Initial: 200 * time.Millisecond, Max: time.Second, CooldownAfter: 3, Cooldown: time.Second}))
-	defer s.Shutdown(context.Background())
-	_, _ = s.HandleDesiredRunnerCount(context.Background(), 0)
-	waitFor(t, func() bool { return s.RuntimeStatus().StartFailures == 1 }, "no first failure")
-	deadline := s.RuntimeStatus().NextRetryAt
-	for time.Now().Before(deadline.Add(-5 * time.Millisecond)) {
-		_, _ = s.HandleDesiredRunnerCount(context.Background(), 0)
-		if s.RuntimeStatus().StartAttempts != 1 {
-			t.Fatal("demand bypassed retry deadline")
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		s := NewScaleSetController(1, 1, 2, &mockProvider{}, &errorScaleset{err: errors.New("failure")}, slog.Default(), WithRetry(config.RetryConfig{Initial: 200 * time.Millisecond, Max: time.Second, CooldownAfter: 3, Cooldown: time.Second}))
+		defer s.Shutdown(ctx)
+
+		_, _ = s.HandleDesiredRunnerCount(ctx, 0)
+		synctest.Wait()
+		initial := s.RuntimeStatus()
+		if initial.StartFailures != 1 || initial.NextRetryAt.IsZero() {
+			t.Fatalf("first startup failure did not set a retry deadline: %+v", initial)
 		}
-		time.Sleep(time.Millisecond)
-	}
-	if s.RuntimeStatus().NextRetryAt.IsZero() {
-		t.Fatal("empty queue cleared minimum-runner retry")
-	}
+
+		time.Sleep(time.Until(initial.NextRetryAt) - time.Nanosecond)
+		_, _ = s.HandleDesiredRunnerCount(ctx, 0)
+		synctest.Wait()
+		beforeRetry := s.RuntimeStatus()
+		if beforeRetry.StartAttempts != 1 || !beforeRetry.NextRetryAt.Equal(initial.NextRetryAt) {
+			t.Fatalf("empty queue changed the minimum-runner retry before its deadline: %+v", beforeRetry)
+		}
+
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		if got := s.RuntimeStatus().StartAttempts; got != 2 {
+			t.Fatalf("start attempts at retry deadline = %d, want 2", got)
+		}
+	})
 }
 func TestOlderReadinessSuccessDoesNotClearLaterFailure(t *testing.T) {
 	s := NewScaleSetController(1, 0, 2, &mockProvider{}, &mockScaleset{}, slog.Default())

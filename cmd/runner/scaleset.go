@@ -252,7 +252,7 @@ func runScalesetDelete(c *cobra.Command, args []string) error {
 	}
 
 	// Deleting the scale set a running listener holds would strand its jobs.
-	release, err := runnerlock.Acquire(runnerlock.DefaultPath, runnerlock.Info{
+	release, err := runnerlock.Acquire(listenerLockPath(cfg.LockFile), runnerlock.Info{
 		PID:       os.Getpid(),
 		StartedAt: time.Now(),
 	})
