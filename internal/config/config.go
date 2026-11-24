@@ -35,6 +35,7 @@ type Config struct {
 	HealthAddress string  `mapstructure:"health-address"`
 	DryRun        bool    `mapstructure:"dry-run"`
 	LogFile       *string `mapstructure:"log-file"`
+	LockFile      string  `mapstructure:"lock-file"`
 	// Concurrent is the GitLab Runner-style process-wide instance limit. Zero
 	// automatically uses the sum of resolved scale-set max-runners values.
 	Concurrent int `mapstructure:"concurrent"`
@@ -108,9 +109,24 @@ type ScaleSetConfig struct {
 
 	AppleContainer AppleContainerConfig `mapstructure:"apple-container"`
 	Seatbelt       SeatbeltConfig       `mapstructure:"seatbelt"`
+	WindowsUTM     WindowsUTMConfig     `mapstructure:"windows-utm"`
 
 	// Tart VM provider settings
 	Tart TartConfig `mapstructure:"tart"`
+}
+
+// WindowsUTMConfig describes a stopped ARM64 UTM image and its job SSH forward.
+type WindowsUTMConfig struct {
+	Template      string        `mapstructure:"template"`
+	DocumentsDir  string        `mapstructure:"documents-dir"`
+	PrepareScript string        `mapstructure:"prepare-script"`
+	Port          int           `mapstructure:"port"`
+	User          string        `mapstructure:"user"`
+	PortMin       int           `mapstructure:"port-min"`
+	PortMax       int           `mapstructure:"port-max"`
+	IdentityFile  string        `mapstructure:"identity-file"`
+	RunnerDir     string        `mapstructure:"runner-dir"`
+	ReadyTimeout  time.Duration `mapstructure:"ready-timeout"`
 }
 
 // AppleContainerConfig bounds each independently booted Linux job VM.
@@ -519,6 +535,17 @@ func (ss *ScaleSetConfig) applyDefaults() {
 	if ss.Provider == DefaultProvider && ss.Docker.Socket == "" {
 		ss.Docker.Socket = DefaultDockerSocket
 	}
+	if ss.Provider == "windows-utm" {
+		if ss.WindowsUTM.PortMin == 0 {
+			ss.WindowsUTM.PortMin = 2200
+		}
+		if ss.WindowsUTM.PortMax == 0 {
+			ss.WindowsUTM.PortMax = 2299
+		}
+		if ss.WindowsUTM.ReadyTimeout == 0 {
+			ss.WindowsUTM.ReadyTimeout = DefaultReadyTimeout
+		}
+	}
 }
 
 // IsDinD resolves the legacy host-socket-sharing boolean; use DockerDaemonMode for effective access.
@@ -740,8 +767,19 @@ func (ss *ScaleSetConfig) ValidationErrors() []error {
 		if ss.AppleContainer.CPU < 1 || ss.AppleContainer.Memory < 512 {
 			add(fmt.Errorf("apple-container requires positive CPU and at least 512 MB memory"))
 		}
+	case "windows-utm":
+		windows := ss.WindowsUTM
+		if windows.Template == "" || windows.User == "" || windows.PrepareScript == "" || windows.RunnerDir == "" {
+			add(fmt.Errorf("windows-utm requires template, user, prepare-script and runner-dir"))
+		}
+		if windows.Port < 0 || windows.Port > 65535 || windows.PortMin < 1 || windows.PortMax < windows.PortMin || windows.PortMax > 65535 {
+			add(fmt.Errorf("windows-utm SSH ports must be between 1 and 65535"))
+		}
+		if windows.ReadyTimeout <= 0 {
+			add(fmt.Errorf("windows-utm.ready-timeout must be greater than zero"))
+		}
 	default:
-		add(fmt.Errorf("unsupported provider %q (must be %q, \"apple-container\" or \"tart\")", ss.Provider, DefaultProvider))
+		add(fmt.Errorf("unsupported provider %q (must be %q, \"apple-container\", \"seatbelt\", \"tart\" or \"windows-utm\")", ss.Provider, DefaultProvider))
 	}
 
 	return problems
@@ -773,6 +811,9 @@ func (c *Config) GlobalValidationErrors() []error {
 	}
 	if c.HealthPort < 0 || c.HealthPort > 65535 {
 		problems = append(problems, fmt.Errorf("health-port must be between 0 and 65535"))
+	}
+	if c.LockFile != "" && (!filepath.IsAbs(c.LockFile) || filepath.Clean(c.LockFile) != c.LockFile || c.LockFile == "/") {
+		problems = append(problems, fmt.Errorf("lock-file must be a clean absolute path other than /"))
 	}
 	if c.Concurrent < 0 {
 		problems = append(problems, fmt.Errorf("concurrent must be >= 0"))
